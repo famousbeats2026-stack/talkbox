@@ -63,10 +63,30 @@ private:
 };
 
 //==============================================================================
-// Black-and-gold editor: vowel display up top, vowel buttons + Morph
-// knob, then one panel per section (Carrier / Auto-Talk / Drive & Mix),
-// five big preset buttons, and a hint line. Five presets: Roger /
-// G-Funk / Robot / Talk Wah / Clean Talk.
+// Vocoder band display: the 16 live vocoder band envelopes as gold
+// bars on a log-frequency strip (100 Hz – 8 kHz). Shows the mic's
+// spectral shape as it opens the bands.
+class VocoderDisplayComponent : public juce::Component, private juce::Timer
+{
+public:
+    explicit VocoderDisplayComponent(FamousBeatsTalkBoxProcessor& p);
+    ~VocoderDisplayComponent() override = default;
+
+    void paint(juce::Graphics& g) override;
+
+private:
+    void timerCallback() override { repaint(); }
+    float freqToX(float freq) const;
+
+    FamousBeatsTalkBoxProcessor& processor;
+};
+
+//==============================================================================
+// Black-and-gold editor: mode switch (Talk Box / Vocoder) up top,
+// vowel display or vocoder band display, vowel buttons + Morph knob,
+// then one panel per section (Carrier / Auto-Talk or Vocoder /
+// Drive & Mix), six big preset buttons, and a hint line.
+// Presets: Roger / G-Funk / Robot / Talk Wah / Clean Talk / Vocoder.
 class PluginEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -78,6 +98,7 @@ public:
 
 private:
     void timerCallback() override;
+    void updateModeUI();
 
     void makeKnob(juce::Slider& knob, juce::Label& label, const juce::String& text,
                   const char* paramId, int knobSize = 64);
@@ -86,8 +107,10 @@ private:
     void makeSectionLabel(juce::Label& label, const juce::String& text);
     void makePresetButton(juce::TextButton& button, const juce::String& text, int presetIndex);
     void makeVowelButton(juce::TextButton& button, const juce::String& text, int vowelIndex);
+    void makeModeButton(juce::TextButton& button, const juce::String& text, int modeIndex);
     void selectPreset(int presetIndex);
     void setVowel(int vowelIndex);
+    void setMode(int modeIndex);
 
     FamousBeatsTalkBoxProcessor& processor;
     GoldLookAndFeel goldLaf;
@@ -97,13 +120,18 @@ private:
     juce::Label hintLabel;
 
     VowelDisplayComponent vowelDisplay;
+    VocoderDisplayComponent vocoderDisplay;
+
+    // Mode switch.
+    juce::TextButton talkBoxModeButton;
+    juce::TextButton vocoderModeButton;
 
     // Vowel buttons + Morph.
     juce::TextButton vowelButtons[5];
     juce::Slider morphKnob;  juce::Label morphLabel;
 
     // Section labels.
-    juce::Label carrierSection, autoTalkSection, driveSection;
+    juce::Label carrierSection, autoTalkSection, vocoderSection, driveSection;
 
     // Carrier.
     juce::Slider waveBlendKnob; juce::Label waveBlendLabel;
@@ -121,6 +149,12 @@ private:
     juce::Slider talkBpmKnob;   juce::Label talkBpmLabel;
     juce::ComboBox talkShapeBox; juce::Label talkShapeLabel;
 
+    // Vocoder (shares the middle panel with Auto-Talk).
+    juce::Slider modLevelKnob;     juce::Label modLevelLabel;
+    juce::Slider carrierLevelKnob; juce::Label carrierLevelLabel;
+    juce::Slider vocoderMixKnob;   juce::Label vocoderMixLabel;
+    juce::Label vocoderHintLabel;
+
     // Drive & Mix.
     juce::Slider driveKnob;     juce::Label driveLabel;
     juce::Slider driveMixKnob;  juce::Label driveMixLabel;
@@ -129,11 +163,13 @@ private:
     juce::TextButton bypassButton;
 
     // Presets.
-    juce::TextButton presetButtons[5];
+    juce::TextButton presetButtons[6];
 
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>> sliderAttachments;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>> comboAttachments;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> buttonAttachments;
+
+    int lastModeUI = -1; // mode the UI was last laid out for
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditor)
 };

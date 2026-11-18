@@ -12,19 +12,29 @@
 #include <cmath>
 
 //==============================================================================
-// Famous Beats Talk Box — a playable MIDI talk box in a single plugin:
+// Famous Beats Talk Box — a playable MIDI talk box + vocoder in one plugin.
 //
-//   MIDI -> Carrier synth (saw/square + sub, poly or mono/legato)
-//        -> Drive (tanh grit) -> Formant talk box (4 bandpass formants
-//           per vowel, A/E/I/O/U with morph + Auto-Talk LFO)
-//        -> Mix (dry carrier / talkboxed) -> Output
+// Two modes, one plugin:
 //
-// This is a formant-filter emulation of the classic talk box sound,
-// NOT a physical tube talk box: no real mouth or tube is involved.
-// The vowel shaping is an approximation of the human vocal tract, and
-// it will not sound identical to a hardware talk box. It is also NOT
-// a clone of any other talk box product — it is built from standard
-// published vowel formant frequencies and a from-scratch carrier.
+//   TALK BOX (the original): MIDI -> Carrier synth (saw/square + sub,
+//     poly or mono/legato) -> Drive (tanh grit) -> Formant talk box
+//     (4 bandpass formants per vowel, A/E/I/O/U with morph + Auto-Talk
+//     LFO) -> Mix (dry carrier / talkboxed) -> Output. No audio input
+//     needed — the synth is the sound.
+//
+//   VOCODER (new): the plugin is an audio effect with MIDI input. The
+//     MIC is the modulator and the same MIDI carrier synth is the
+//     carrier. A 16-band channel vocoder (100 Hz – 8 kHz, log-spaced)
+//     takes the envelope of the mic in each band and applies it to the
+//     carrier in the same band. Pitch comes from the keys, words and
+//     consonants come from the mic — it only sounds like talking when
+//     both are going at once.
+//
+// This is a formant-filter / channel-vocoder emulation of the classic
+// talk box and vocoder sounds, NOT a physical tube talk box: no real
+// mouth or tube is involved. It is also NOT a clone of any other talk
+// box or vocoder product — it is built from standard published vowel
+// formant frequencies and a from-scratch carrier and filter bank.
 class FamousBeatsTalkBoxProcessor : public juce::AudioProcessor
 {
 public:
@@ -58,7 +68,8 @@ public:
     juce::AudioProcessorValueTreeState& getParametersState() { return parameters; }
 
     // One-click presets. Sets every section's parameters.
-    // 0 = Roger, 1 = G-Funk, 2 = Robot, 3 = Talk Wah, 4 = Clean Talk
+    // 0 = Roger, 1 = G-Funk, 2 = Robot, 3 = Talk Wah, 4 = Clean Talk,
+    // 5 = Vocoder
     void applyPreset(int presetIndex);
     static const char* getPresetName(int presetIndex);
     int getCurrentPreset() const { return currentPreset; }
@@ -75,6 +86,21 @@ public:
     static double divisionToBeats(int divisionIndex);
     // Current host tempo in BPM, or 0 when the host provides none.
     double getHostBpm() const { return hostBpm.load(); }
+
+    // ---- Vocoder readouts ----
+    bool isVocoderMode() const { return modeParam != nullptr && modeParam->load() > 0.5f; }
+    // Per-band envelope levels (0..1) for the editor's band display.
+    void getVocoderBandLevels(float* levels, int n) const;
+    // Centre frequencies of the vocoder bands, in Hz.
+    void getVocoderBandFreqs(float* freqs, int n) const;
+    // Measured end-to-end latency of the vocoder path (bandpass group
+    // delay + envelope attack), in seconds. See the test harness.
+    static constexpr double kVocoderLatencySeconds = 0.0044;
+    double getVocoderLatencySeconds() const { return kVocoderLatencySeconds; }
+    int getVocoderLatencySamples() const
+    {
+        return (int) std::lround(kVocoderLatencySeconds * sampleRateHz);
+    }
 
     // ---- Vowel formant tables ----
     // Standard published vowel formant frequencies (Hz), F1..F4.
@@ -102,9 +128,18 @@ public:
     static constexpr float kFormantQ[kNumFormants] = { 5.0f, 8.0f, 9.0f, 9.0f };
     static constexpr const char* kVowelNames[kNumVowels] = { "A", "E", "I", "O", "U" };
 
+    // ---- Vocoder filter bank ----
+    static constexpr int kNumVocoderBands = 16;
+    static constexpr float kVocoderFreqMin = 100.0f;
+    static constexpr float kVocoderFreqMax = 8000.0f;
+    static constexpr float kVocoderBandQ = 3.0f;
+
     // ---- Parameter IDs ----
     static constexpr const char* kBypassParam     = "bypass";
     static constexpr const char* kOutputGainParam = "outputGain"; // dB
+
+    // Mode: 0 = Talk Box, 1 = Vocoder.
+    static constexpr const char* kModeParam = "mode";
 
     // Carrier synth.
     static constexpr const char* kWaveBlendParam = "waveBlend"; // 0..1 (0 = saw, 1 = square)
@@ -130,11 +165,17 @@ public:
     static constexpr const char* kDriveMixParam = "driveMix"; // 0..100 %
     static constexpr const char* kMixParam      = "mix";      // 0..100 % (dry carrier -> talkboxed)
 
-    static constexpr int kNumPresets = 5;
+    // Vocoder controls.
+    static constexpr const char* kModLevelParam     = "modLevel";     // 0..1 (mic level in)
+    static constexpr const char* kCarrierLevelParam = "carrierLevel"; // 0..1 (carrier into the bank)
+    static constexpr const char* kVocoderMixParam   = "vocoderMix";   // 0..100 % (dry mic -> vocoded)
+
+    static constexpr int kNumPresets = 6;
     static constexpr int kMaxVoices = 8;
     static constexpr const char* kAutoTalkDivisionNames[3] = { "1/4", "1/8", "1/16" };
     static constexpr const char* kAutoTalkShapeNames[3] = { "Smooth", "Triangle", "Steps" };
     static constexpr const char* kOctaveNames[5] = { "-2", "-1", "0", "+1", "+2" };
+    static constexpr const char* kModeNames[2] = { "Talk Box", "Vocoder" };
 
 private:
     // ---- Carrier voices ----
@@ -163,6 +204,12 @@ private:
                             float glideCoeff, float attackCoeff, float releaseCoeff,
                             float bendFactor);
 
+    // Vocoder: reset the filter bank + envelopes (on mode change /
+    // prepare). Called when switching into or out of vocoder mode so
+    // the switch never clicks or carries stale state.
+    void resetVocoderState();
+    void resetFormantState();
+
     void setParamValue(const char* paramId, float value);
 
     juce::AudioProcessorValueTreeState parameters;
@@ -171,6 +218,7 @@ private:
     // Cached parameter pointers.
     std::atomic<float>* bypassParam = nullptr;
     std::atomic<float>* outputGainParam = nullptr;
+    std::atomic<float>* modeParam = nullptr;
     std::atomic<float>* waveBlendParam = nullptr;
     std::atomic<float>* subLevelParam = nullptr;
     std::atomic<float>* glideParam = nullptr;
@@ -187,6 +235,9 @@ private:
     std::atomic<float>* driveParam = nullptr;
     std::atomic<float>* driveMixParam = nullptr;
     std::atomic<float>* mixParam = nullptr;
+    std::atomic<float>* modLevelParam = nullptr;
+    std::atomic<float>* carrierLevelParam = nullptr;
+    std::atomic<float>* vocoderMixParam = nullptr;
 
     // Host tempo (BPM) from the playhead, 0 when the host gives none.
     std::atomic<double> hostBpm { 0.0 };
@@ -194,6 +245,7 @@ private:
 
     double sampleRateHz = 44100.0;
     std::vector<float> carrierScratch; // mono carrier sum, one block
+    std::vector<float> modScratch;     // mono modulator (mic) input, one block
 
     // Voices + mono/legato note stack.
     std::array<Voice, kMaxVoices> voices;
@@ -210,6 +262,27 @@ private:
     float formantGains[kNumFormants] = { 1.0f, 0.75f, 0.5f, 0.35f };
     float formantFreqTargets[kNumFormants] = { 730.0f, 1090.0f, 2440.0f, 3500.0f };
     float formantGainTargets[kNumFormants] = { 1.0f, 0.75f, 0.5f, 0.35f };
+
+    // ---- Vocoder filter bank ----
+    // 16 log-spaced bandpass filters, 100 Hz – 8 kHz. The modulator
+    // (mic) and the carrier each pass through the same bank; each
+    // carrier band is gated by the envelope of the modulator band.
+    std::unique_ptr<juce::dsp::IIR::Filter<float>> modFilters[kNumVocoderBands];
+    std::unique_ptr<juce::dsp::IIR::Filter<float>> carrierFilters[kNumVocoderBands];
+    float vocoderBandCentres[kNumVocoderBands] = {};
+    float bandEnvelopes[kNumVocoderBands] = {};
+    // Mic noise gate: slow level follower + smoothed gate (0..1) so
+    // room noise never opens the bands on its own.
+    float modLevelSmooth = 0.0f;
+    float modGate = 0.0f;
+    // Delay line for the dry (mic) path so the dry/wet mix stays
+    // time-aligned with the vocoder path's latency.
+    std::vector<float> dryDelayLine;
+    int dryDelayPos = 0;
+    // Mode switching: last mode seen, and a short fade that ramps the
+    // output back in over ~10 ms after a switch so it never clicks.
+    int lastMode = -1;
+    float modeFade = 1.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FamousBeatsTalkBoxProcessor)
 };

@@ -245,9 +245,75 @@ void VowelDisplayComponent::paint(juce::Graphics& g)
 }
 
 //==============================================================================
+// VocoderDisplayComponent
+VocoderDisplayComponent::VocoderDisplayComponent(FamousBeatsTalkBoxProcessor& p)
+    : processor(p)
+{
+    startTimerHz(15);
+}
+
+float VocoderDisplayComponent::freqToX(float freq) const
+{
+    const double l = std::log10(juce::jlimit(100.0f, 8000.0f, freq));
+    const double l0 = std::log10(100.0), l1 = std::log10(8000.0);
+    const double t = (l - l0) / (l1 - l0);
+    return 30.0f + (float) t * ((float) getWidth() - 60.0f);
+}
+
+void VocoderDisplayComponent::paint(juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+    g.setColour(GoldLookAndFeel::panel);
+    g.fillRoundedRectangle(bounds, 8.0f);
+    g.setColour(GoldLookAndFeel::goldDark);
+    g.drawRoundedRectangle(bounds, 8.0f, 1.5f);
+
+    const float h = (float) getHeight();
+    const float baseY = h - 18.0f;
+
+    // Frequency gridlines.
+    g.setFont(juce::Font(juce::FontOptions(10.0f)));
+    for (float f : { 200.0f, 500.0f, 1000.0f, 2000.0f, 4000.0f })
+    {
+        const float x = freqToX(f);
+        g.setColour(GoldLookAndFeel::goldDark.withAlpha(0.35f));
+        g.drawVerticalLine((int) x, 8.0f, baseY);
+        g.setColour(GoldLookAndFeel::cream.withAlpha(0.55f));
+        g.drawText(f >= 1000.0f ? juce::String(f / 1000.0f, 1) + "k" : juce::String((int) f),
+                   (int) x - 20, (int) baseY + 2, 40, 14, juce::Justification::centred);
+    }
+
+    // Live band envelopes: one gold bar per vocoder band, log-spaced
+    // 100 Hz – 8 kHz. This is the mic's spectral shape as it opens
+    // the bands — sing and the bars dance.
+    float levels[FamousBeatsTalkBoxProcessor::kNumVocoderBands] = {};
+    float freqs[FamousBeatsTalkBoxProcessor::kNumVocoderBands] = {};
+    processor.getVocoderBandLevels(levels, FamousBeatsTalkBoxProcessor::kNumVocoderBands);
+    processor.getVocoderBandFreqs(freqs, FamousBeatsTalkBoxProcessor::kNumVocoderBands);
+    for (int i = 0; i < FamousBeatsTalkBoxProcessor::kNumVocoderBands; ++i)
+    {
+        const float x = freqToX(freqs[i]);
+        const float barH = juce::jlimit(2.0f, baseY - 14.0f,
+                                        levels[i] * (baseY - 20.0f));
+        juce::Rectangle<float> bar(x - 9.0f, baseY - barH, 18.0f, barH);
+        g.setGradientFill(GoldLookAndFeel::goldGradient(bar.getX(), bar.getY(),
+                                                        bar.getX(), bar.getBottom()));
+        g.fillRoundedRectangle(bar, 3.0f);
+    }
+
+    g.setFont(juce::Font(juce::FontOptions(12.0f, juce::Font::bold)));
+    g.setColour(GoldLookAndFeel::cream);
+    g.drawText("16-BAND VOCODER", (int) bounds.getX() + 10, 8, 160, 16,
+               juce::Justification::left);
+    g.setFont(juce::Font(juce::FontOptions(11.0f, juce::Font::bold)));
+    g.setColour(GoldLookAndFeel::gold);
+    g.drawText("MIC IN", (int) bounds.getRight() - 80, 8, 70, 16, juce::Justification::right);
+}
+
+//==============================================================================
 // PluginEditor
 PluginEditor::PluginEditor(FamousBeatsTalkBoxProcessor& p)
-    : AudioProcessorEditor(p), processor(p), vowelDisplay(p)
+    : AudioProcessorEditor(p), processor(p), vowelDisplay(p), vocoderDisplay(p)
 {
     setLookAndFeel(&goldLaf);
     setSize(kWidth, 620);
@@ -264,11 +330,19 @@ PluginEditor::PluginEditor(FamousBeatsTalkBoxProcessor& p)
     addAndMakeVisible(brandLabel);
 
     addAndMakeVisible(vowelDisplay);
+    addAndMakeVisible(vocoderDisplay);
+
+    // Mode switch (Talk Box / Vocoder).
+    makeModeButton(talkBoxModeButton, "TALK BOX", 0);
+    makeModeButton(vocoderModeButton, "VOCODER", 1);
 
     for (int i = 0; i < 5; ++i)
     {
         makeVowelButton(vowelButtons[i],
                         juce::String(FamousBeatsTalkBoxProcessor::kVowelNames[i]), i);
+    }
+    for (int i = 0; i < 6; ++i)
+    {
         makePresetButton(presetButtons[i],
                          juce::String(FamousBeatsTalkBoxProcessor::getPresetName(i)), i);
     }
@@ -278,6 +352,7 @@ PluginEditor::PluginEditor(FamousBeatsTalkBoxProcessor& p)
 
     makeSectionLabel(carrierSection, "CARRIER");
     makeSectionLabel(autoTalkSection, "AUTO-TALK");
+    makeSectionLabel(vocoderSection, "VOCODER");
     makeSectionLabel(driveSection, "DRIVE & MIX");
 
     // Carrier.
@@ -318,6 +393,22 @@ PluginEditor::PluginEditor(FamousBeatsTalkBoxProcessor& p)
               FamousBeatsTalkBoxProcessor::kAutoTalkShapeParam);
     talkShapeBox.addItemList(
         juce::StringArray(FamousBeatsTalkBoxProcessor::kAutoTalkShapeNames, 3), 1);
+
+    // Vocoder (shares the middle panel with Auto-Talk — only one is
+    // visible at a time, depending on the mode).
+    makeKnob(modLevelKnob, modLevelLabel, "MIC LEVEL",
+             FamousBeatsTalkBoxProcessor::kModLevelParam);
+    makeKnob(carrierLevelKnob, carrierLevelLabel, "CARRIER",
+             FamousBeatsTalkBoxProcessor::kCarrierLevelParam);
+    makeKnob(vocoderMixKnob, vocoderMixLabel, "VOCODER MIX",
+             FamousBeatsTalkBoxProcessor::kVocoderMixParam);
+    vocoderHintLabel.setText("Sing into the mic and play the keys.\n"
+                             "Pitch comes from the keys,\nwords come from the mic.",
+                             juce::dontSendNotification);
+    vocoderHintLabel.setFont(juce::Font(juce::FontOptions(12.0f)));
+    vocoderHintLabel.setColour(juce::Label::textColourId, GoldLookAndFeel::cream);
+    vocoderHintLabel.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(vocoderHintLabel);
 
     // Drive & Mix.
     makeKnob(driveKnob, driveLabel, "DRIVE",
@@ -367,6 +458,9 @@ PluginEditor::PluginEditor(FamousBeatsTalkBoxProcessor& p)
     attachSlider(driveMixKnob, FamousBeatsTalkBoxProcessor::kDriveMixParam);
     attachSlider(mixKnob, FamousBeatsTalkBoxProcessor::kMixParam);
     attachSlider(outputKnob, FamousBeatsTalkBoxProcessor::kOutputGainParam);
+    attachSlider(modLevelKnob, FamousBeatsTalkBoxProcessor::kModLevelParam);
+    attachSlider(carrierLevelKnob, FamousBeatsTalkBoxProcessor::kCarrierLevelParam);
+    attachSlider(vocoderMixKnob, FamousBeatsTalkBoxProcessor::kVocoderMixParam);
     attachCombo(octaveBox, FamousBeatsTalkBoxProcessor::kOctaveParam);
     attachCombo(talkDivisionBox, FamousBeatsTalkBoxProcessor::kAutoTalkDivisionParam);
     attachCombo(talkShapeBox, FamousBeatsTalkBoxProcessor::kAutoTalkShapeParam);
@@ -376,6 +470,7 @@ PluginEditor::PluginEditor(FamousBeatsTalkBoxProcessor& p)
     attachButton(bypassButton, FamousBeatsTalkBoxProcessor::kBypassParam);
 
     selectPreset(processor.getCurrentPreset());
+    updateModeUI();
     startTimerHz(15);
 }
 
@@ -384,9 +479,68 @@ void PluginEditor::timerCallback()
     const int nearest = juce::jlimit(0, 4, (int) std::lround(processor.getCurrentVowel()));
     for (int i = 0; i < 5; ++i)
         vowelButtons[i].setToggleState(i == nearest, juce::dontSendNotification);
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 6; ++i)
         presetButtons[i].setToggleState(i == processor.getCurrentPreset(),
                                         juce::dontSendNotification);
+    updateModeUI();
+}
+
+// Show the right panel for the current mode: Talk Box gets the vowel
+// display, vowel buttons, Morph and Auto-Talk; Vocoder gets the band
+// display and the vocoder knobs, with the vowel / Auto-Talk controls
+// hidden and the vowel buttons greyed out.
+void PluginEditor::updateModeUI()
+{
+    const bool vocoder = processor.isVocoderMode();
+    const int mode = vocoder ? 1 : 0;
+    if (mode == lastModeUI)
+        return;
+    lastModeUI = mode;
+
+    talkBoxModeButton.setToggleState(!vocoder, juce::dontSendNotification);
+    vocoderModeButton.setToggleState(vocoder, juce::dontSendNotification);
+
+    vowelDisplay.setVisible(!vocoder);
+    vocoderDisplay.setVisible(vocoder);
+
+    for (int i = 0; i < 5; ++i)
+    {
+        vowelButtons[i].setVisible(!vocoder);
+        vowelButtons[i].setEnabled(!vocoder);
+    }
+    morphKnob.setVisible(!vocoder);
+    morphKnob.setEnabled(!vocoder);
+    morphLabel.setVisible(!vocoder);
+
+    autoTalkSection.setVisible(!vocoder);
+    autoTalkButton.setVisible(!vocoder);
+    talkRateKnob.setVisible(!vocoder);
+    talkRateLabel.setVisible(!vocoder);
+    talkDepthKnob.setVisible(!vocoder);
+    talkDepthLabel.setVisible(!vocoder);
+    talkSyncButton.setVisible(!vocoder);
+    talkDivisionBox.setVisible(!vocoder);
+    talkDivisionLabel.setVisible(!vocoder);
+    talkBpmKnob.setVisible(!vocoder);
+    talkBpmLabel.setVisible(!vocoder);
+    talkShapeBox.setVisible(!vocoder);
+    talkShapeLabel.setVisible(!vocoder);
+
+    vocoderSection.setVisible(vocoder);
+    modLevelKnob.setVisible(vocoder);
+    modLevelLabel.setVisible(vocoder);
+    carrierLevelKnob.setVisible(vocoder);
+    carrierLevelLabel.setVisible(vocoder);
+    vocoderMixKnob.setVisible(vocoder);
+    vocoderMixLabel.setVisible(vocoder);
+    vocoderHintLabel.setVisible(vocoder);
+
+    hintLabel.setText(vocoder
+        ? "Vocoder mode — sing into the mic and play the keys at the same time. "
+          "Pitch from the keys, words from the mic."
+        : "Play it from your MIDI keyboard — keys and talk box in one plugin. "
+          "No audio input needed.",
+        juce::dontSendNotification);
 }
 
 void PluginEditor::makeKnob(juce::Slider& knob, juce::Label& label, const juce::String& text,
@@ -443,6 +597,15 @@ void PluginEditor::makeVowelButton(juce::TextButton& button, const juce::String&
     addAndMakeVisible(button);
 }
 
+void PluginEditor::makeModeButton(juce::TextButton& button, const juce::String& text, int modeIndex)
+{
+    button.setButtonText(text);
+    button.setClickingTogglesState(true);
+    button.getProperties().set("fontSize", 13.0);
+    button.onClick = [this, modeIndex] { setMode(modeIndex); };
+    addAndMakeVisible(button);
+}
+
 void PluginEditor::selectPreset(int presetIndex)
 {
     processor.applyPreset(presetIndex);
@@ -456,6 +619,15 @@ void PluginEditor::setVowel(int vowelIndex)
         FamousBeatsTalkBoxProcessor::kVowelParam);
     if (param != nullptr)
         param->setValueNotifyingHost(param->convertTo0to1((float) vowelIndex));
+}
+
+void PluginEditor::setMode(int modeIndex)
+{
+    auto* param = processor.getParametersState().getParameter(
+        FamousBeatsTalkBoxProcessor::kModeParam);
+    if (param != nullptr)
+        param->setValueNotifyingHost(param->convertTo0to1((float) modeIndex));
+    updateModeUI();
 }
 
 void PluginEditor::paint(juce::Graphics& g)
@@ -478,17 +650,21 @@ void PluginEditor::resized()
     brandLabel.setBounds(kWidth - 300, 14, 288, 28);
 
     vowelDisplay.setBounds(kMargin, 56, kWidth - 2 * kMargin, 120);
+    vocoderDisplay.setBounds(kMargin, 56, kWidth - 2 * kMargin, 120);
 
-    // Vowel buttons + Morph knob row.
+    // Vowel buttons + Morph knob row, with the mode switch at the right.
     for (int i = 0; i < 5; ++i)
         vowelButtons[i].setBounds(kMargin + i * 96, 194, 88, 36);
     morphKnob.setBounds(580, 184, 56, 56);
     morphLabel.setBounds(640, 200, 90, 24);
     morphLabel.setJustificationType(juce::Justification::left);
+    talkBoxModeButton.setBounds(760, 194, 88, 36);
+    vocoderModeButton.setBounds(856, 194, 88, 36);
 
     // Section labels.
     carrierSection.setBounds(carrierPanel().getX() + 12, kSectionsTop + 8, 200, 20);
     autoTalkSection.setBounds(autoTalkPanel().getX() + 12, kSectionsTop + 8, 200, 20);
+    vocoderSection.setBounds(autoTalkPanel().getX() + 12, kSectionsTop + 8, 200, 20);
     driveSection.setBounds(drivePanel().getX() + 12, kSectionsTop + 8, 200, 20);
 
     // Carrier panel: 3 knobs, then Octave combo + Mono button.
@@ -515,6 +691,14 @@ void PluginEditor::resized()
     talkShapeLabel.setBounds(autoTalkPanel().getX() + 240, kSectionsTop + 158, 66, 16);
     talkShapeBox.setBounds(autoTalkPanel().getX() + 240, kSectionsTop + 176, 66, 26);
 
+    // Vocoder panel (shares the middle panel with Auto-Talk): 3 knobs,
+    // then a hint line at the bottom.
+    placeKnob(modLevelKnob, modLevelLabel, autoTalkPanel().getX() + 16, kSectionsTop + 36, 64);
+    placeKnob(carrierLevelKnob, carrierLevelLabel, autoTalkPanel().getX() + 116, kSectionsTop + 36, 64);
+    placeKnob(vocoderMixKnob, vocoderMixLabel, autoTalkPanel().getX() + 216, kSectionsTop + 36, 64);
+    vocoderHintLabel.setBounds(autoTalkPanel().getX() + 12, kSectionsTop + 158,
+                               autoTalkPanel().getWidth() - 24, 64);
+
     // Drive & Mix panel: 4 knobs, then Bypass.
     placeKnob(driveKnob, driveLabel, drivePanel().getX() + 8, kSectionsTop + 36, 60);
     placeKnob(driveMixKnob, driveMixLabel, drivePanel().getX() + 84, kSectionsTop + 36, 60);
@@ -523,8 +707,8 @@ void PluginEditor::resized()
     bypassButton.setBounds(drivePanel().getX() + 99, kSectionsTop + 174, 120, 32);
 
     // Presets row.
-    for (int i = 0; i < 5; ++i)
-        presetButtons[i].setBounds(kMargin + i * 197, 516, 187, 44);
+    for (int i = 0; i < 6; ++i)
+        presetButtons[i].setBounds(kMargin + i * 164, 516, 154, 44);
 
     hintLabel.setBounds(kMargin, 568, kWidth - 2 * kMargin, 30);
 }
