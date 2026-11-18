@@ -25,7 +25,10 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(JUCE)
 
 # ---- The plugin ----
-# A MIDI instrument: MIDI in, stereo audio out.
+# An audio effect with MIDI input: the mic (audio in) is the modulator
+# and MIDI notes drive the built-in carrier synth. Talk Box mode makes
+# its own sound from MIDI alone; Vocoder mode needs both the mic and
+# the keys at the same time.
 juce_add_plugin(FamousBeatsTalkBox
     COMPANY_NAME "Famous Beats Studio"
     PRODUCT_NAME "Famous Beats Talk Box"
@@ -33,14 +36,14 @@ juce_add_plugin(FamousBeatsTalkBox
     PLUGIN_MANUFACTURER_CODE FbSt
     PLUGIN_CODE FBTB
     FORMATS VST3 AU
-    IS_SYNTH TRUE
+    IS_SYNTH FALSE
     NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
-    VST3_CATEGORIES Instrument
-    AU_MAIN_TYPE kAudioUnitType_MusicDevice
+    VST3_CATEGORIES Fx
+    AU_MAIN_TYPE kAudioUnitType_MusicEffect
 )
 
 # Generate JuceHeader.h (needed because the sources #include <JuceHeader.h>).
